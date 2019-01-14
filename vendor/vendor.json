@@ -1,0 +1,19 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "NtAIySpR00+F3TzW8JMGBJ2qBvA=",
+			"path": "github.com/google/go-github/github",
+			"revision": "2205ffae75b1b3b1675bfc4c55838c65ed5008fa",
+			"revisionTime": "2019-01-12T03:39:33Z"
+		},
+		{
+			"checksumSHA1": "p3IB18uJRs4dL2K5yx24MrLYE9A=",
+			"path": "github.com/google/go-querystring/query",
+			"revision": "44c6ddd0a2342c386950e880b658017258da92fc",
+			"revisionTime": "2018-09-16T13:16:37Z"
+		}
+	],
+	"rootPath": "github.com/TykTechnologies/pm"
+}
