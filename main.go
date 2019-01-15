@@ -19,6 +19,7 @@ import (
 
 var prURLRe = regexp.MustCompile(`https://github.com/([^/]+)/([^/]+)/(issues|pull)/(\d+)`)
 var greenCheck = tm.Bold(tm.Color("✔", tm.GREEN))
+var yellowCheck = tm.Bold(tm.Color("✔", tm.YELLOW))
 var redCheck = tm.Bold(tm.Color("✘", tm.RED))
 
 var gh *github.Client
@@ -63,6 +64,7 @@ func gitExecSilent(dir string, commands ...string) error {
 
 func gitCloneRepo(url string, cachePath string) error {
 	defer gitExecSilent(cachePath, "reset", "--hard")
+	defer gitExecSilent(cachePath, "fetch", "origin")
 
 	if _, err := os.Stat(cachePath); !os.IsNotExist(err) {
 		return nil
@@ -71,10 +73,10 @@ func gitCloneRepo(url string, cachePath string) error {
 	return gitExecSilent("", "clone", url, cachePath)
 }
 
-func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded bool, dryRun bool) error {
+func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded bool, dryRun bool, onlyMissing bool) error {
 	var err error
 	url := fmt.Sprintf("https://github.com/%s/%s", org, repo)
-	cachePath := fmt.Sprintf(".git_cache/%s/%s", org, repo)
+	cachePath := fmt.Sprintf("/tmp/git_cache/%s/%s", org, repo)
 	prefix := ""
 	if embedded {
 		prefix = "\t"
@@ -114,7 +116,7 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 		mergeToFound = true
 
 		gitExecSilent(cachePath, "reset", "--hard")
-		gitExecSilent(cachePath, "pull")
+		gitExecSilent(cachePath, "branch", "-D", branch)
 		if _, stderr, _, err = gitExecWithOutput(cachePath, "checkout", branch); err != nil {
 			return fmt.Errorf("Checkout error for `%s` branch %s:", branch, stderr)
 		}
@@ -126,7 +128,7 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 		}
 		commitBody := stdout
 		authorEmail, _, _, _ := gitExecWithOutput(cachePath, "log", "-1", pr.GetMergeCommitSHA(), "--pretty=format:%aE")
-		logCommand := []string{"log", "--all-match", "--author", authorEmail}
+		logCommand := []string{"log", branch, "--all-match", "--author", authorEmail}
 		for _, line := range strings.Split(commitBody, "\n") {
 			if strings.TrimSpace(line) == "" {
 				continue
@@ -137,12 +139,16 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 		stdout, stderr, _, err = gitExecWithOutput(cachePath, logCommand...)
 
         // Commit found in history
-		if err == nil {
-			fmt.Printf(prefix+"%s Already merged to %s\n", greenCheck, branch)
+		if strings.TrimSpace(stdout) != "" && err == nil {
+            if !onlyMissing {
+    			fmt.Printf(prefix+"%s Already merged to %s [commit message check]\n", greenCheck, branch)
+            }
 		} else {
 			stdout, stderr, _, _ = gitExecWithOutput(cachePath, "cherry-pick", "-x", pr.GetMergeCommitSHA())
 			if strings.Contains(stderr, "allow-empty") {
-				fmt.Printf(prefix+"%s Already merged to %s\n", greenCheck, branch)
+                if !onlyMissing {
+    				fmt.Printf(prefix+"%s Already merged to %s\n", greenCheck, branch)
+                }
 			} else if strings.Contains(stderr, "error: could not apply") {
 				if !embedded {
 					fmt.Printf("%s Conflict during cherry-picking to `%s`\n\nTo resolve: `cd %s`, fix conflict, run `git cherry-pick --continue`, and push to origin `git push origin %s`\nTip: Use `cd -` to go back into previous directory\n", redCheck, branch, cachePath, branch)
@@ -156,7 +162,7 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 				if !dryRun {
 					fmt.Printf(prefix+"%s Succesfully merged to %s\n", greenCheck, branch)
 				} else {
-					fmt.Printf(prefix+"%s Can be merged to %s\n", greenCheck, branch)
+					fmt.Printf(prefix+"%s Can be merged to %s\n", yellowCheck, branch)
 				}
 			}
 
@@ -275,6 +281,10 @@ func main() {
 					Name:  "dry-run",
 					Usage: "See what is going to be merged, but do not push changes",
 				},
+				cli.BoolFlag{
+					Name:  "only-missing",
+					Usage: "List only missing commits either can be merged or having issues with merging",
+				},
 			},
 			Action: func(c *cli.Context) error {
 				projectURL := c.Args().First()
@@ -341,7 +351,7 @@ func main() {
 							for _, pr := range pullRequests {
 								prmatch := prURLRe.FindAllStringSubmatch(pr, 1)
 								prID, _ := strconv.Atoi(prmatch[0][4])
-								if err := mergePR(prmatch[0][1], prmatch[0][2], prID, c.StringSlice("to"), true, c.Bool("dry-run")); err != nil {
+								if err := mergePR(prmatch[0][1], prmatch[0][2], prID, c.StringSlice("to"), true, c.Bool("dry-run"), c.Bool("only-missing")); err != nil {
 									fmt.Printf("%s %s\n", redCheck, err)
 								}
 							}
@@ -394,7 +404,7 @@ func main() {
 					log.Fatal("Issue ID do not look like a number:", issue)
 				}
 
-				if err := mergePR(org, repo, issueNum, c.StringSlice("to"), false, c.Bool("dry-run")); err != nil {
+				if err := mergePR(org, repo, issueNum, c.StringSlice("to"), false, c.Bool("dry-run"), false); err != nil {
 					log.Fatal(err)
 				}
 				return nil
