@@ -138,17 +138,17 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 		}
 		stdout, stderr, _, err = gitExecWithOutput(cachePath, logCommand...)
 
-        // Commit found in history
+		// Commit found in history
 		if strings.TrimSpace(stdout) != "" && err == nil {
-            if !onlyMissing {
-    			fmt.Printf(prefix+"%s Already merged to %s [commit message check]\n", greenCheck, branch)
-            }
+			if !onlyMissing {
+				fmt.Printf(prefix+"%s Already merged to %s [commit message check]\n", greenCheck, branch)
+			}
 		} else {
 			stdout, stderr, _, _ = gitExecWithOutput(cachePath, "cherry-pick", "-x", pr.GetMergeCommitSHA())
 			if strings.Contains(stderr, "allow-empty") {
-                if !onlyMissing {
-    				fmt.Printf(prefix+"%s Already merged to %s\n", greenCheck, branch)
-                }
+				if !onlyMissing {
+					fmt.Printf(prefix+"%s Already merged to %s\n", greenCheck, branch)
+				}
 			} else if strings.Contains(stderr, "error: could not apply") {
 				if !embedded {
 					fmt.Printf("%s Conflict during cherry-picking to `%s`\n\nTo resolve: `cd %s`, fix conflict, run `git cherry-pick --continue`, and push to origin `git push origin %s`\nTip: Use `cd -` to go back into previous directory\n", redCheck, branch, cachePath, branch)
@@ -185,14 +185,27 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 		}
 	}
 
+	prBody := pr.GetBody()
+	ghMarkdownRe := regexp.MustCompile("(?:([0-9A-Za-z-_]+)/([0-9A-Za-z-_]+))?#([0-9A-Za-z-_]+)")
+	prBody = ghMarkdownRe.ReplaceAllStringFunc(prBody, func(in string) string {
+		m := ghMarkdownRe.FindAllStringSubmatch(in, 1)[0]
+		if m[1] == "" {
+			return "https://github.com/" + org + "/" + repo + "/issues/" + m[3]
+		} else {
+			return "https://github.com/" + m[1] + "/" + m[2] + "/issues/" + m[3]
+		}
+	})
+
 	// Notify linked issues
-	for _, match := range prURLRe.FindAllStringSubmatch(pr.GetBody(), -1) {
+	for _, match := range prURLRe.FindAllStringSubmatch(prBody, -1) {
 		if dryRun {
 			break
 		}
+
 		num, _ := strconv.Atoi(match[4])
 		_, _, err = gh.Issues.Get(context.Background(), org, match[2], num)
 		if err != nil {
+			log.Fatal(err, org, match[2], num)
 			// Broken link?
 			continue
 		}
@@ -378,7 +391,7 @@ func main() {
 				},
 			},
 			Action: func(c *cli.Context) error {
-				var repo, issue string
+				var repo, issue, ticketType string
 
 				target := c.Args().First()
 				org := c.GlobalString("org")
@@ -388,11 +401,13 @@ func main() {
 					if len(match) > 0 {
 						org = match[0][1]
 						repo = match[0][2]
+						ticketType = match[0][3]
 						issue = match[0][4]
 					}
 				} else if strings.Contains(target, "/") {
 					target := strings.Split(c.Args().First(), "/")
 					repo, issue = target[0], target[1]
+					ticketType = "pull"
 				}
 
 				if repo == "" || issue == "" {
@@ -404,9 +419,37 @@ func main() {
 					log.Fatal("Issue ID do not look like a number:", issue)
 				}
 
-				if err := mergePR(org, repo, issueNum, c.StringSlice("to"), false, c.Bool("dry-run"), false); err != nil {
-					log.Fatal(err)
+				if ticketType == "issues" {
+					fmt.Printf("Detected issue, trying to find linked PRs\n")
+
+					issueNum, _ := strconv.Atoi(issue)
+					issueGH, _, _ := gh.Issues.Get(context.Background(), org, repo, issueNum)
+					if issueGH != nil {
+						fmt.Printf("%s\n%s\n", tm.Bold("["+issue+"] "+issueGH.GetTitle()), issueGH.GetHTMLURL())
+					} else {
+						log.Fatal("%s Can't access %s\n", redCheck, target)
+					}
+					pullRequests := findLinkedPRs(org, repo, issueNum)
+					issueUrl := fmt.Sprintf("https://github.com/%s/%s/issues/%d", org, repo, issueNum)
+
+					if len(pullRequests) == 0 {
+						log.Fatal("%s Can't find PR for Issue %s\n", redCheck, issueUrl)
+					} else {
+						fmt.Printf("%s Found %d PRs for Issue %s\n", greenCheck, len(pullRequests), issueUrl)
+						for _, pr := range pullRequests {
+							prmatch := prURLRe.FindAllStringSubmatch(pr, 1)
+							prID, _ := strconv.Atoi(prmatch[0][4])
+							if err := mergePR(prmatch[0][1], prmatch[0][2], prID, c.StringSlice("to"), true, c.Bool("dry-run"), false); err != nil {
+								log.Fatal("%s %s\n", redCheck, err)
+							}
+						}
+					}
+				} else {
+					if err := mergePR(org, repo, issueNum, c.StringSlice("to"), false, c.Bool("dry-run"), false); err != nil {
+						log.Fatal(err)
+					}
 				}
+
 				return nil
 			},
 		},
