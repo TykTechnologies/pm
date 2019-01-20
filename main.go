@@ -120,26 +120,43 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 		if _, stderr, _, err = gitExecWithOutput(cachePath, "checkout", branch); err != nil {
 			return fmt.Errorf("Checkout error for `%s` branch %s:", branch, stderr)
 		}
+		gitExecSilent(cachePath, "pull")
 
-		// Get merge commit info
-		stdout, stderr, _, err = gitExecWithOutput(cachePath, "log", "-1", pr.GetMergeCommitSHA(), "--pretty=format:%B")
-		if err != nil {
-			return fmt.Errorf("Unknown commit SHA %s. %s %s", pr.GetMergeCommitSHA(), stdout, stderr, err)
-		}
-		commitBody := stdout
-		authorEmail, _, _, _ := gitExecWithOutput(cachePath, "log", "-1", pr.GetMergeCommitSHA(), "--pretty=format:%aE")
-		logCommand := []string{"log", branch, "--all-match", "--author", authorEmail}
-		for _, line := range strings.Split(commitBody, "\n") {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			logCommand = append(logCommand, "--grep")
-			logCommand = append(logCommand, strings.TrimSpace(line))
-		}
-		stdout, stderr, _, err = gitExecWithOutput(cachePath, logCommand...)
+
+        commitFound := false
+
+        stdout, stderr, _, err = gitExecWithOutput(cachePath, "log", "--grep", pr.GetMergeCommitSHA())
+        if strings.TrimSpace(stdout) != "" && err == nil {
+            commitFound = true
+        }
+
+        if !commitFound {
+            // Get merge commit info
+            stdout, stderr, _, err = gitExecWithOutput(cachePath, "log", "-1", pr.GetMergeCommitSHA(), "--pretty=format:%B")
+            if err != nil {
+                return fmt.Errorf("Unknown commit SHA %s. %s %s", pr.GetMergeCommitSHA(), stdout, stderr, err)
+            }
+
+
+            commitBody := stdout
+            authorEmail, _, _, _ := gitExecWithOutput(cachePath, "log", "-1", pr.GetMergeCommitSHA(), "--pretty=format:%aE")
+            logCommand := []string{"log", branch, "--all-match", "--author", authorEmail}
+            for _, line := range strings.Split(commitBody, "\n") {
+                if strings.TrimSpace(line) == "" {
+                    continue
+                }
+                logCommand = append(logCommand, "--grep")
+                logCommand = append(logCommand, strings.TrimSpace(line))
+            }
+            stdout, stderr, _, err = gitExecWithOutput(cachePath, logCommand...)
+
+            if strings.TrimSpace(stdout) != "" && err == nil {
+                commitFound = true
+            }
+        }
 
 		// Commit found in history
-		if strings.TrimSpace(stdout) != "" && err == nil {
+		if commitFound {
 			if !onlyMissing {
 				fmt.Printf(prefix+"%s Already merged to %s [commit message check]\n", greenCheck, branch)
 			}
@@ -151,9 +168,9 @@ func mergePR(org string, repo string, issueNum int, mergeTo []string, embedded b
 				}
 			} else if strings.Contains(stderr, "error: could not apply") {
 				if !embedded {
-					fmt.Printf("%s Conflict during cherry-picking to `%s`\n\nTo resolve: `cd %s`, fix conflict, run `git cherry-pick --continue`, and push to origin `git push origin %s`\nTip: Use `cd -` to go back into previous directory\n", redCheck, branch, cachePath, branch)
+					return fmt.Errorf("%s Conflict during cherry-picking to `%s`\n\nTo resolve: `cd %s`, fix conflict, run `git cherry-pick --continue`, and push to origin `git push origin %s`\nTip: Use `cd -` to go back into previous directory\n", redCheck, branch, cachePath, branch)
 				} else {
-					fmt.Printf(prefix+"%s Conflict during cherry-picking `%s` to `%s`\n", redCheck, pr.GetMergeCommitSHA(), branch)
+					return fmt.Errorf(prefix+"%s Conflict during cherry-picking `%s` to `%s`\n", redCheck, pr.GetMergeCommitSHA(), branch)
 				}
 			} else {
 				if stderr != "" {
@@ -439,7 +456,7 @@ func main() {
 						for _, pr := range pullRequests {
 							prmatch := prURLRe.FindAllStringSubmatch(pr, 1)
 							prID, _ := strconv.Atoi(prmatch[0][4])
-							if err := mergePR(prmatch[0][1], prmatch[0][2], prID, c.StringSlice("to"), true, c.Bool("dry-run"), false); err != nil {
+							if err := mergePR(prmatch[0][1], prmatch[0][2], prID, c.StringSlice("to"), false, c.Bool("dry-run"), false); err != nil {
 								log.Fatal("%s %s\n", redCheck, err)
 							}
 						}
